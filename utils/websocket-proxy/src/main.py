@@ -63,12 +63,14 @@ PS_ENDPOINT_TEMPLATE = "wss://ces.googleapis.com/ws/google.cloud.ces.v1.SessionS
 CURRENT_TOKEN = None
 CURRENT_TOKEN_TIMESTAMP = None
 
-# Keys to strip from upstream JSON messages before forwarding to the client.
-# Example: STRIPPED_KEYS="diagnosticInfo;rootSpan"
+# Filter sensitive fields from upstream responses
+# When not set or empty, no filtering is applied (pass-through).
+# Recommended production value:
+#   STRIPPED_KEYS="rootSpan.attributes;rootSpan.childSpans"
 _STRIPPED_KEYS_ENV = os.getenv("STRIPPED_KEYS")
-_SENSITIVE_KEYS = (
-    {k.strip() for k in _STRIPPED_KEYS_ENV.split(";") if k.strip()}
-    if _STRIPPED_KEYS_ENV is not None
+_STRIPPED_PATHS = (
+    [p.strip() for p in _STRIPPED_KEYS_ENV.split(";") if p.strip()]
+    if _STRIPPED_KEYS_ENV is not None and _STRIPPED_KEYS_ENV.strip()
     else None
 )
 
@@ -110,57 +112,74 @@ def is_origin_allowed(origin):
     return False
 
 
-def _strip_keys_recursive(obj):
-    """Recursively remove sensitive keys from a JSON-like structure.
+def _delete_at_path(obj, path_parts):
+    """Delete a field at the given dot-path within a JSON object.
 
-    Walks dicts and lists in-place, deleting any key present in
-    ``_SENSITIVE_KEYS``.
+    Args:
+        obj: The parsed JSON object (dict).
+        path_parts: List of path segments, e.g. ["rootSpan", "attributes"].
 
     Returns:
-        True if at least one key was removed anywhere in the tree.
+        True if the field was found and deleted.
     """
-    modified = False
-    if isinstance(obj, dict):
-        for key in _SENSITIVE_KEYS & obj.keys():
-            del obj[key]
-            modified = True
-        for value in obj.values():
-            if _strip_keys_recursive(value):
-                modified = True
-    elif isinstance(obj, list):
-        for item in obj:
-            if _strip_keys_recursive(item):
-                modified = True
-    return modified
+    current = obj
+    for part in path_parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return False
+    leaf = path_parts[-1]
+    if isinstance(current, dict) and leaf in current:
+        del current[leaf]
+        return True
+    return False
 
 
 def _strip_diagnostic_info(message):
-    """Remove sensitive fields from an upstream JSON message.
+    """Remove fields specified by dot-path selectors from an upstream message.
+
+    Each path in ``_STRIPPED_PATHS`` targets a specific location in the JSON
+    tree (e.g. ``rootSpan.attributes``). Only the leaf field is removed;
+    parent objects and sibling fields are preserved.
+
+    Handles both text (str) and binary (bytes) WebSocket frames.
+    Non-JSON frames (e.g. raw audio) are returned unchanged.
 
     Args:
         message: The raw WebSocket message (str or bytes).
 
     Returns:
-        The sanitized message as a string, or the original message unchanged.
+        The sanitized message, or the original message unchanged.
     """
-    if _SENSITIVE_KEYS is None or not _SENSITIVE_KEYS:
+    if not _STRIPPED_PATHS:
         return message
 
-    if not isinstance(message, str):
+    is_bytes = isinstance(message, bytes)
+
+    try:
+        text = message.decode("utf-8") if is_bytes else message
+    except (UnicodeDecodeError, AttributeError):
         return message
 
     try:
-        data = json.loads(message)
+        data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return message
 
     if not isinstance(data, dict):
         return message
 
-    if not _strip_keys_recursive(data):
+    modified = False
+    for path in _STRIPPED_PATHS:
+        parts = path.split(".")
+        if _delete_at_path(data, parts):
+            modified = True
+
+    if not modified:
         return message
 
-    return json.dumps(data)
+    sanitized = json.dumps(data)
+    return sanitized.encode("utf-8") if is_bytes else sanitized
 
 
 async def handle_client(client_websocket):
@@ -357,7 +376,7 @@ async def handle_client(client_websocket):
         async def process_messages_from_remote():
             try:
                 async for message in remote_websocket:
-                    sanitized = _strip_diagnostic_info(message) if _SENSITIVE_KEYS is not None else message
+                    sanitized = _strip_diagnostic_info(message) if _STRIPPED_PATHS else message
                     if not await send_msg_to_client(sanitized):
                         logging.warning("send_msg_to_client failed. Breaking loop.")
                         break

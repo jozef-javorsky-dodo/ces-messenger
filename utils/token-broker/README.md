@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains a Google Cloud Function designed to return service account access tokens. It is intended to be used with the ces-messenger web component to allow unauthenticated users access CES aggents.
+This repository contains a Google Cloud Function designed to return service account access tokens. It is intended to be used with the ces-messenger web component to allow unauthenticated users access CES agents.
 
 ### Key Features
 

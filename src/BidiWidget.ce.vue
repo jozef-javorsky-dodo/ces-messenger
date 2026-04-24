@@ -366,6 +366,7 @@ let websocketUri = agentConfig.websocketUri;
 
 // Set logging as specified in config
 logger.enableDebugger = agentConfig.enableDebugger;
+Logger.enabled = agentConfig.enableDebugger;
 
 // Query variables
 let queryVars = {};

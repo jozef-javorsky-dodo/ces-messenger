@@ -59,7 +59,7 @@ class Logger {
   /* eslint-disable */
   // Static methods to replace console logs
   static log(...args) {
-    console.log(...args);
+    if (Logger.enabled) console.log(...args);
   }
 
   static warn(...args) {
@@ -70,9 +70,11 @@ class Logger {
     console.error(...args);
   }
   static debug(...args) {
-    console.debug(...args);
+    if (Logger.enabled) console.debug(...args);
   }
   /* eslint-enable */
 }
+
+Logger.enabled = false;
 
 export { Logger };
